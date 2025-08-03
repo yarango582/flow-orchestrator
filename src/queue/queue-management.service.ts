@@ -4,7 +4,7 @@ import {
   TaskMessage,
   ResultMessage,
   FlowExecutionMessage,
-} from '@flow-platform/node-core';
+} from 'flow-platform-node-core';
 import { OrchestratorConfigService } from '../config/orchestrator-config.service';
 
 export interface QueueInfo {

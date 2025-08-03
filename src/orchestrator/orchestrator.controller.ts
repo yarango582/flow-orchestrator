@@ -1,6 +1,6 @@
 import { Controller, Post, Get, Body, Logger } from '@nestjs/common';
 import { OrchestratorService } from './orchestrator.service';
-import { FlowExecutionMessage } from '@flow-platform/node-core';
+import { FlowExecutionMessage } from 'flow-platform-node-core';
 
 export interface ExecuteFlowDto {
   flowId: string;

@@ -4,8 +4,8 @@ import {
   OnModuleInit,
   OnModuleDestroy,
 } from '@nestjs/common';
-import { Cron, CronExpression, SchedulerRegistry } from '@nestjs/schedule';
-import { RabbitMQClient, FlowExecutionMessage } from '@flow-platform/node-core';
+import { SchedulerRegistry } from '@nestjs/schedule';
+import { RabbitMQClient, FlowExecutionMessage } from 'flow-platform-node-core';
 import { OrchestratorConfigService } from '../config/orchestrator-config.service';
 import { QueueManagementService } from '../queue/queue-management.service';
 

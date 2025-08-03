@@ -1,10 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { QueueManagementService } from '../queue/queue-management.service';
 import { WorkerManagementService } from '../worker/worker-management.service';
-import { 
-  FlowExecutionMessage, 
-  TaskMessage,
-} from '@flow-platform/node-core';
+import { FlowExecutionMessage, TaskMessage } from 'flow-platform-node-core';
 
 @Injectable()
 export class OrchestratorService {
@@ -17,10 +14,10 @@ export class OrchestratorService {
 
   async onModuleInit() {
     this.logger.log('🚀 Orchestrator Service starting...');
-    
+
     // Services initialize themselves through their onModuleInit
     await this.startTaskDistribution();
-    
+
     this.logger.log('✅ Orchestrator Service ready');
   }
 
@@ -44,7 +41,6 @@ export class OrchestratorService {
 
       this.logger.log(`✨ Flow execution queued with task ID: ${taskId}`);
       return taskId;
-
     } catch (error) {
       this.logger.error(
         `❌ Failed to execute flow ${flowExecution.flowId}`,
@@ -90,7 +86,6 @@ export class OrchestratorService {
           memory: process.memoryUsage(),
         },
       };
-
     } catch (error) {
       this.logger.error('Failed to get system stats', error);
       throw error;
@@ -102,16 +97,18 @@ export class OrchestratorService {
    */
   async assignTask(task: TaskMessage): Promise<boolean> {
     try {
-      const assignedWorkerId = await this.workerService.assignTaskToWorker(task);
+      const assignedWorkerId =
+        await this.workerService.assignTaskToWorker(task);
 
       if (assignedWorkerId) {
-        this.logger.log(`✅ Task ${task.id} assigned to worker ${assignedWorkerId}`);
+        this.logger.log(
+          `✅ Task ${task.id} assigned to worker ${assignedWorkerId}`,
+        );
         return true;
       } else {
         this.logger.warn(`⚠️ No available worker for task ${task.id}`);
         return false;
       }
-
     } catch (error) {
       this.logger.error(`❌ Failed to assign task ${task.id}`, error);
       return false;
