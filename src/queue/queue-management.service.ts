@@ -4,6 +4,7 @@ import {
   TaskMessage,
   ResultMessage,
   FlowExecutionMessage,
+  Queues,
 } from 'flow-platform-node-core';
 import { OrchestratorConfigService } from '../config/orchestrator-config.service';
 
@@ -23,11 +24,11 @@ export class QueueManagementService {
   private readonly logger = new Logger(QueueManagementService.name);
   private readonly rabbitMQClient: RabbitMQClient;
   private readonly queueNames = {
-    high: 'tasks.high',
-    normal: 'tasks.normal',
-    low: 'tasks.low',
-    results: 'results',
-    dlq: 'tasks.dlq',
+    high: Queues.TASKS_HIGH,
+    normal: Queues.TASKS_NORMAL,
+    low: Queues.TASKS_LOW,
+    results: Queues.WORKER_RESULTS,
+    dlq: Queues.DEAD_LETTER,
   };
 
   constructor(private readonly config: OrchestratorConfigService) {

@@ -1,11 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import {
   RabbitMQClient,
+  Queues,
   WorkerRegistrationMessage,
   WorkerHeartbeatMessage,
+  TaskMessage,
   WorkerStatus,
   HealthStatus,
-  TaskMessage,
 } from 'flow-platform-node-core';
 import { OrchestratorConfigService } from '../config/orchestrator-config.service';
 
@@ -50,9 +51,9 @@ export class WorkerManagementService {
   >();
 
   private readonly queueNames = {
-    workerRegistration: 'worker.registration',
-    workerHeartbeat: 'worker.heartbeat',
-    workerAssignment: 'worker.assignment',
+    workerRegistration: Queues.WORKER_REGISTRATION,
+    workerHeartbeat: Queues.WORKER_HEARTBEAT,
+    workerResults: Queues.WORKER_RESULTS,
   };
 
   constructor(private readonly config: OrchestratorConfigService) {
