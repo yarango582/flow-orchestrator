@@ -33,14 +33,18 @@ export class OrchestratorService {
         `🔄 Executing flow ${flowExecution.flowId} with execution ID ${flowExecution.executionId}`,
       );
 
-      // Publish flow execution to appropriate queue
-      const taskId = await this.queueService.publishFlowExecution(
+      // Publish flow execution to appropriate queue - now returns array of task IDs
+      const taskIds = await this.queueService.publishFlowExecution(
         flowExecution,
         priority,
       );
 
-      this.logger.log(`✨ Flow execution queued with task ID: ${taskId}`);
-      return taskId;
+      this.logger.log(
+        `✨ Flow execution queued: ${flowExecution.executionId} created ${taskIds.length} tasks: ${taskIds.join(', ')}`,
+      );
+
+      // Return the execution ID for tracking purposes
+      return flowExecution.executionId;
     } catch (error) {
       this.logger.error(
         `❌ Failed to execute flow ${flowExecution.flowId}`,

@@ -5,6 +5,7 @@ import { ConfigModule } from './config/config.module';
 import { MessagingModule } from './messaging/messaging.module';
 import { OrchestratorModule } from './orchestrator/orchestrator.module';
 import { JobSchedulingModule } from './scheduling/job-scheduling.module';
+import { FlowsModule } from './flows/flows.module';
 
 @Module({
   imports: [
@@ -12,6 +13,7 @@ import { JobSchedulingModule } from './scheduling/job-scheduling.module';
     MessagingModule,
     OrchestratorModule,
     JobSchedulingModule,
+    FlowsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

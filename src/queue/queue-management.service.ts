@@ -5,8 +5,10 @@ import {
   ResultMessage,
   FlowExecutionMessage,
   Queues,
+  MessageFactory,
 } from 'flow-platform-node-core';
 import { OrchestratorConfigService } from '../config/orchestrator-config.service';
+import { MessagingService } from '../messaging/messaging.service';
 
 export interface QueueInfo {
   name: string;
@@ -22,7 +24,6 @@ export interface TaskDistributionStrategy {
 @Injectable()
 export class QueueManagementService {
   private readonly logger = new Logger(QueueManagementService.name);
-  private readonly rabbitMQClient: RabbitMQClient;
   private readonly queueNames = {
     high: Queues.TASKS_HIGH,
     normal: Queues.TASKS_NORMAL,
@@ -31,13 +32,10 @@ export class QueueManagementService {
     dlq: Queues.DEAD_LETTER,
   };
 
-  constructor(private readonly config: OrchestratorConfigService) {
-    this.rabbitMQClient = new RabbitMQClient({
-      url: this.config.rabbitmqUrl,
-      exchange: this.config.rabbitmqExchange,
-      prefetch: this.config.rabbitmqPrefetch,
-    });
-  }
+  constructor(
+    private readonly config: OrchestratorConfigService,
+    private readonly messagingService: MessagingService,
+  ) {}
 
   async onModuleInit() {
     await this.initializeQueues();
@@ -46,10 +44,7 @@ export class QueueManagementService {
 
   private async initializeQueues() {
     try {
-      await this.rabbitMQClient.connect();
-      this.logger.log('RabbitMQ connected for queue management');
-
-      // Setup consumers for different priority queues
+      // MessagingService handles the connection, we just setup consumers
       await this.setupTaskConsumers();
       await this.setupResultConsumer();
 
@@ -61,13 +56,15 @@ export class QueueManagementService {
   }
 
   private async setupTaskConsumers() {
+    const rabbitClient = this.messagingService.getClient();
+    
     // High priority tasks
-    await this.rabbitMQClient.consume(this.queueNames.high, async (message) => {
+    await rabbitClient.consume(this.queueNames.high, async (message) => {
       await this.handleTaskMessage(message as TaskMessage, 'high');
     });
 
     // Normal priority tasks
-    await this.rabbitMQClient.consume(
+    await rabbitClient.consume(
       this.queueNames.normal,
       async (message) => {
         await this.handleTaskMessage(message as TaskMessage, 'normal');
@@ -75,13 +72,15 @@ export class QueueManagementService {
     );
 
     // Low priority tasks
-    await this.rabbitMQClient.consume(this.queueNames.low, async (message) => {
+    await rabbitClient.consume(this.queueNames.low, async (message) => {
       await this.handleTaskMessage(message as TaskMessage, 'low');
     });
   }
 
   private async setupResultConsumer() {
-    await this.rabbitMQClient.consume(
+    const rabbitClient = this.messagingService.getClient();
+    
+    await rabbitClient.consume(
       this.queueNames.results,
       async (message) => {
         await this.handleResultMessage(message as ResultMessage);
@@ -128,44 +127,49 @@ export class QueueManagementService {
   async publishFlowExecution(
     flowExecution: FlowExecutionMessage,
     priority: 'high' | 'normal' | 'low' = 'normal',
-  ) {
+  ): Promise<string[]> {
     try {
-      const queueName = this.queueNames[priority];
+      this.logger.log(
+        `Processing flow execution: ${flowExecution.flowId} with ${flowExecution.flowData.nodes.length} nodes`,
+      );
 
-      // Convert FlowExecutionMessage to TaskMessage format
-      const task: TaskMessage = {
-        id: `flow-${flowExecution.executionId}`,
-        timestamp: new Date().toISOString(),
-        version: '1.0',
-        flowId: flowExecution.flowId,
-        nodeId: 'flow-start',
-        nodeType: 'flow_execution',
-        priority: priority,
-        configuration: {},
-        inputs: flowExecution.inputs || {},
-        metadata: {
-          createdAt: new Date().toISOString(),
-          flowName: `Flow ${flowExecution.flowId}`,
-          nodeIndex: 0,
-          totalNodes: 1,
-        },
-        retry: {
-          attempts: 0,
+      const taskIds: string[] = [];
+      const totalNodes = flowExecution.flowData.nodes.length;
+
+      // Create individual task messages for each node in the flow
+      for (let i = 0; i < flowExecution.flowData.nodes.length; i++) {
+        const node = flowExecution.flowData.nodes[i];
+        
+        // Create a proper task message using MessageFactory
+        const task = MessageFactory.createTaskMessage({
+          flowId: flowExecution.flowId,
+          nodeId: node.id,
+          nodeType: node.type,
+          priority,
+          configuration: node.config,
+          inputs: flowExecution.inputs || {},
+          userId: flowExecution.metadata.userId,
+          flowName: flowExecution.flowData.name,
+          nodeIndex: i,
+          totalNodes,
           maxAttempts: 3,
-          backoffMs: 1000,
-        },
-        timeout: {
           executionTimeoutMs: 300000,
-          queueTimeoutMs: 60000,
-        },
-      };
+        });
 
-      await this.rabbitMQClient.publishTask(task);
+        // Distribute task to appropriate worker
+        await this.messagingService.distributeTask(task, priority);
+        taskIds.push(task.id);
+
+        this.logger.debug(
+          `Task created for node ${node.id} (${node.type}): ${task.id}`,
+        );
+      }
 
       this.logger.log(
-        `Flow execution task published: ${task.id} to ${queueName}`,
+        `Flow execution distributed: ${flowExecution.executionId} created ${taskIds.length} tasks`,
       );
-      return task.id;
+      
+      return taskIds;
     } catch (error) {
       this.logger.error('Failed to publish flow execution', error);
       throw error;
@@ -177,7 +181,7 @@ export class QueueManagementService {
     priority: 'high' | 'normal' | 'low' = 'normal',
   ) {
     try {
-      await this.rabbitMQClient.publishTask(task);
+      await this.messagingService.distributeTask(task, priority);
 
       this.logger.log(`Task published: ${task.id} to ${priority} queue`);
     } catch (error) {
@@ -198,7 +202,8 @@ export class QueueManagementService {
         },
       };
 
-      await this.rabbitMQClient.publish(
+      const rabbitClient = this.messagingService.getClient();
+      await rabbitClient.publish(
         this.config.rabbitmqExchange,
         this.queueNames.dlq,
         dlqTask,
@@ -255,11 +260,7 @@ export class QueueManagementService {
   }
 
   async onModuleDestroy() {
-    try {
-      await this.rabbitMQClient.disconnect();
-      this.logger.log('RabbitMQ client disconnected');
-    } catch (error) {
-      this.logger.error('Error disconnecting RabbitMQ client', error);
-    }
+    // MessagingService handles cleanup
+    this.logger.log('Queue management service shutting down');
   }
 }

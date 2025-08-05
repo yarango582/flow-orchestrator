@@ -378,12 +378,12 @@ export class JobSchedulingService implements OnModuleInit, OnModuleDestroy {
         },
       };
 
-      // Send to queue management service
-      const taskId = await this.queueService.publishFlowExecution(
+      // Send to queue management service - now returns array of task IDs
+      const taskIds = await this.queueService.publishFlowExecution(
         flowExecution,
         job.priority,
       );
-      execution.taskId = taskId;
+      execution.taskId = taskIds.join(','); // Store all task IDs
 
       // Update job metadata
       job.metadata.executionCount++;
@@ -397,7 +397,7 @@ export class JobSchedulingService implements OnModuleInit, OnModuleDestroy {
       execution.status = 'success';
 
       this.logger.log(
-        `✅ Job executed successfully: ${job.name} -> Task ID: ${taskId}`,
+        `✅ Job executed successfully: ${job.name} -> Task IDs: ${execution.taskId}`,
       );
     } catch (error) {
       execution.status = 'failed';

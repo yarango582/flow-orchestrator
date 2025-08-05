@@ -1,6 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
 import {
-  RabbitMQClient,
   Queues,
   WorkerRegistrationMessage,
   WorkerHeartbeatMessage,
@@ -9,6 +8,7 @@ import {
   HealthStatus,
 } from 'flow-platform-node-core';
 import { OrchestratorConfigService } from '../config/orchestrator-config.service';
+import { MessagingService } from '../messaging/messaging.service';
 
 export interface WorkerInfo {
   id: string;
@@ -43,7 +43,6 @@ export interface LoadBalancingStrategy {
 @Injectable()
 export class WorkerManagementService {
   private readonly logger = new Logger(WorkerManagementService.name);
-  private readonly rabbitMQClient: RabbitMQClient;
   private readonly workers = new Map<string, WorkerInfo>();
   private readonly loadBalancingStrategies = new Map<
     string,
@@ -56,13 +55,10 @@ export class WorkerManagementService {
     workerResults: Queues.WORKER_RESULTS,
   };
 
-  constructor(private readonly config: OrchestratorConfigService) {
-    this.rabbitMQClient = new RabbitMQClient({
-      url: this.config.rabbitmqUrl,
-      exchange: this.config.rabbitmqExchange,
-      prefetch: this.config.rabbitmqPrefetch,
-    });
-
+  constructor(
+    private readonly config: OrchestratorConfigService,
+    private readonly messagingService: MessagingService,
+  ) {
     this.initializeLoadBalancingStrategies();
   }
 
@@ -74,10 +70,7 @@ export class WorkerManagementService {
 
   private async initializeWorkerManagement() {
     try {
-      await this.rabbitMQClient.connect();
-      this.logger.log('RabbitMQ connected for worker management');
-
-      // Setup consumers for worker communication
+      // MessagingService handles the connection, we just setup consumers
       await this.setupWorkerRegistrationConsumer();
       await this.setupWorkerHeartbeatConsumer();
 
@@ -89,7 +82,9 @@ export class WorkerManagementService {
   }
 
   private async setupWorkerRegistrationConsumer() {
-    await this.rabbitMQClient.consume(
+    const rabbitClient = this.messagingService.getClient();
+
+    await rabbitClient.consume(
       this.queueNames.workerRegistration,
       async (message) => {
         await this.handleWorkerRegistration(
@@ -100,7 +95,9 @@ export class WorkerManagementService {
   }
 
   private async setupWorkerHeartbeatConsumer() {
-    await this.rabbitMQClient.consume(
+    const rabbitClient = this.messagingService.getClient();
+
+    await rabbitClient.consume(
       this.queueNames.workerHeartbeat,
       async (message) => {
         await this.handleWorkerHeartbeat(message as WorkerHeartbeatMessage);
@@ -273,7 +270,7 @@ export class WorkerManagementService {
       }
 
       // Send task to specific worker queue
-      await this.rabbitMQClient.publishTask(task);
+      await this.messagingService.distributeTask(task);
 
       this.logger.debug(`Task ${task.id} sent to worker ${workerId}`);
     } catch (error) {
@@ -283,9 +280,153 @@ export class WorkerManagementService {
   }
 
   private async redistributeWorkerTasks(workerId: string): Promise<void> {
-    // Implementation would redistribute tasks from a failing worker
-    // to other available workers
-    this.logger.log(`Redistributing tasks from worker ${workerId}`);
+    try {
+      this.logger.log(`Starting task redistribution from worker ${workerId}`);
+
+      const failedWorker = this.workers.get(workerId);
+      if (!failedWorker) {
+        this.logger.warn(
+          `Cannot redistribute tasks: worker ${workerId} not found`,
+        );
+        return;
+      }
+
+      // Get tasks currently assigned to the failed worker
+      const tasksToRedistribute = failedWorker.performance.tasksInProgress;
+
+      if (tasksToRedistribute === 0) {
+        this.logger.log(`No tasks to redistribute from worker ${workerId}`);
+        return;
+      }
+
+      // Find available workers that can handle the same node types
+      const availableWorkers = Array.from(this.workers.values()).filter(
+        (worker) =>
+          worker.id !== workerId &&
+          worker.status === 'available' &&
+          worker.health !== 'critical' &&
+          worker.performance.currentLoad < 0.7 && // 70% max load for redistrib
+          // Check if worker supports at least some of the failed worker's capabilities
+          worker.capabilities.supportedNodeTypes.some((nodeType) =>
+            failedWorker.capabilities.supportedNodeTypes.includes(nodeType),
+          ),
+      );
+
+      if (availableWorkers.length === 0) {
+        this.logger.error(
+          `No available workers for task redistribution from ${workerId}`,
+        );
+
+        // Send tasks to dead letter queue for later processing
+        await this.sendTasksToDeadLetterQueue(workerId, tasksToRedistribute);
+        return;
+      }
+
+      // Redistribute tasks evenly among available workers
+      const tasksPerWorker = Math.ceil(
+        tasksToRedistribute / availableWorkers.length,
+      );
+      let redistributedTasks = 0;
+
+      for (const targetWorker of availableWorkers) {
+        const remainingTasks = tasksToRedistribute - redistributedTasks;
+        const tasksToAssign = Math.min(tasksPerWorker, remainingTasks);
+
+        if (tasksToAssign > 0) {
+          // Update target worker load
+          targetWorker.performance.tasksInProgress += tasksToAssign;
+          targetWorker.performance.currentLoad =
+            targetWorker.performance.tasksInProgress /
+            targetWorker.capabilities.maxConcurrentTasks;
+
+          redistributedTasks += tasksToAssign;
+
+          this.logger.log(
+            `Redistributed ${tasksToAssign} tasks from ${workerId} to ${targetWorker.id}`,
+          );
+        }
+
+        if (redistributedTasks >= tasksToRedistribute) {
+          break;
+        }
+      }
+
+      // Reset failed worker task count
+      failedWorker.performance.tasksInProgress = 0;
+      failedWorker.performance.currentLoad = 0;
+
+      // Notify other services about task redistribution
+      await this.notifyTaskRedistribution(
+        workerId,
+        redistributedTasks,
+        availableWorkers.length,
+      );
+
+      this.logger.log(
+        `Successfully redistributed ${redistributedTasks} tasks from worker ${workerId} to ${availableWorkers.length} workers`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Failed to redistribute tasks from worker ${workerId}`,
+        error,
+      );
+      throw error;
+    }
+  }
+
+  private async sendTasksToDeadLetterQueue(
+    workerId: string,
+    taskCount: number,
+  ): Promise<void> {
+    try {
+      const rabbitClient = this.messagingService.getClient();
+
+      // Create a dead letter message for the failed tasks
+      const deadLetterMessage = {
+        id: `redistrib-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        timestamp: new Date().toISOString(),
+        failedWorkerId: workerId,
+        taskCount,
+        reason: 'worker_failure_redistribution',
+        requiresManualIntervention: true,
+        version: '1.0.0',
+      };
+
+      await rabbitClient.publish(
+        this.config.rabbitmqExchange,
+        Queues.DEAD_LETTER,
+        deadLetterMessage,
+        { persistent: true },
+      );
+
+      this.logger.warn(
+        `Sent ${taskCount} tasks from failed worker ${workerId} to dead letter queue`,
+      );
+    } catch (error) {
+      this.logger.error('Failed to send tasks to dead letter queue', error);
+    }
+  }
+
+  private async notifyTaskRedistribution(
+    failedWorkerId: string,
+    taskCount: number,
+    targetWorkerCount: number,
+  ): Promise<void> {
+    try {
+      // In a production system, this would notify:
+      // 1. Monitoring systems (Prometheus metrics)
+      // 2. Alerting systems (PagerDuty, Slack)
+      // 3. Logging aggregators (ELK stack)
+      // 4. API Gateway for client notifications
+
+      this.logger.log(
+        `Task redistribution completed: ${taskCount} tasks from worker ${failedWorkerId} distributed to ${targetWorkerCount} workers`,
+      );
+
+      // You could implement webhook notifications, metrics updates, etc.
+    } catch (error) {
+      this.logger.error('Failed to notify task redistribution', error);
+    }
   }
 
   private async triggerAutoScaling(): Promise<void> {
@@ -463,11 +604,7 @@ export class WorkerManagementService {
   }
 
   async onModuleDestroy() {
-    try {
-      await this.rabbitMQClient.disconnect();
-      this.logger.log('Worker management service disconnected');
-    } catch (error) {
-      this.logger.error('Error during worker management shutdown', error);
-    }
+    // MessagingService handles cleanup
+    this.logger.log('Worker management service shutting down');
   }
 }
