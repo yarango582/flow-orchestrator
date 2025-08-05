@@ -21,6 +21,7 @@ import { OrchestratorConfigService } from '../config/orchestrator-config.service
 export class MessagingService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(MessagingService.name);
   private rabbitMQClient: RabbitMQClient;
+  private orchestrationService: any; // Will be set via setter to avoid circular dependency
 
   constructor(private readonly configService: OrchestratorConfigService) {}
 
@@ -90,25 +91,41 @@ export class MessagingService implements OnModuleInit, OnModuleDestroy {
     this.logger.log('All consumers setup completed');
   }
 
+  /**
+   * Set orchestration service (to avoid circular dependency)
+   */
+  setOrchestrationService(orchestrationService: any): void {
+    this.orchestrationService = orchestrationService;
+  }
+
   private async handleFlowExecutionRequest(message: FlowExecutionMessage) {
     this.logger.debug(`Received flow execution request: ${message.flowId}`);
-    // This will be handled by the TaskQueueService
-    // Emit event for TaskQueueService to process
+    // This will be handled by OrchestrationService once it's set
+    if (this.orchestrationService) {
+      // TODO: Map FlowExecutionMessage to executeFlow call
+      // await this.orchestrationService.executeFlow(message.executionId, message.flowDefinition, message.inputs);
+    }
   }
 
   private async handleTaskResult(message: ResultMessage) {
     this.logger.debug(`Received task result: ${message.taskId}`);
-    // This will be handled by the TaskQueueService
+    if (this.orchestrationService) {
+      await this.orchestrationService.handleTaskResult(message);
+    }
   }
 
   private async handleWorkerHeartbeat(message: WorkerHeartbeatMessage) {
     this.logger.debug(`Received worker heartbeat: ${message.workerId}`);
-    // This will be handled by the WorkerManagementService
+    if (this.orchestrationService) {
+      await this.orchestrationService.handleWorkerHeartbeat(message);
+    }
   }
 
   private async handleWorkerRegistration(message: WorkerRegistrationMessage) {
     this.logger.log(`Received worker registration: ${message.workerId}`);
-    // This will be handled by the WorkerManagementService
+    if (this.orchestrationService) {
+      await this.orchestrationService.handleWorkerRegistration(message);
+    }
   }
 
   /**
